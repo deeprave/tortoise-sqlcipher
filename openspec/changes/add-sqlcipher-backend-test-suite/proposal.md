@@ -10,6 +10,11 @@ must now own tests that specify and regress its implementation behavior.
 
 - Adapt the disposable model, migration fixture, and SQLCipher helpers into
   package-owned test fixtures.
+- Verify round-trip behavior for every built-in Tortoise data field and
+  relation variant supported by the SQLite backend, including the date/time
+  and duration values that cross the DB-API binding boundary; record known
+  upstream limitations such as TimeField rather than treating them as backend
+  failures.
 - Verify every database and WAL/journal sidecar created through the engine is
   SQLCipher-encrypted: neither model schema nor values appear in plaintext,
   and ordinary SQLite cannot query the database.

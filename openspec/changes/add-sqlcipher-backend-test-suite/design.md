@@ -24,6 +24,13 @@ backend without coupling tests to an application model.
 - Build Tortoise configuration in the test suite with the package engine and a
   deterministic 32-byte test key. Test keys remain fixtures only and do not
   model production key handling.
+- Use a parameterized field-compatibility matrix covering every built-in
+  Tortoise data field and standard relation variant that the SQLite backend
+  supports. Include `TimeField` and `TimeDeltaField` explicitly because their
+  Python values can cross the driver binding boundary without prior string
+  conversion. Record `TimeField` as an expected upstream SQLite limitation;
+  other failures identify backend compatibility gaps and do not silently
+  narrow the package's field contract.
 - Inspect the database plus discovered sidecar files for schema/record
   plaintext, then attempt ordinary SQLite access. Both checks are necessary:
   byte inspection alone does not prove ordinary SQLite rejection.
