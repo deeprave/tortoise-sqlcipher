@@ -30,9 +30,10 @@ sqlcipher3 connector in aiosqlite, and relies on a module name containing
 - Replace the source's Python 3.12 type-parameter syntax with
   `ParamSpec`/`TypeVar`, retaining the exception-translating decorator under
   the Python 3.11 baseline.
-- Declare `tortoise-orm>=1.1.8`, `aiosqlite>=0.22.1`, and `sqlcipher3>=0.6.3`
-  as runtime dependencies. These are the proof's known-compatible floors;
-  wider compatibility is not claimed without tests.
+- Declare `tortoise-orm>=1.1.8,<1.2`, `aiosqlite>=0.22.1`, and
+  `sqlcipher3>=0.6.3` as runtime dependencies. These are the proof's
+  known-compatible floors; the Tortoise upper bound prevents unverified 1.2+
+  internals from being accepted until compatibility is deliberately reviewed.
 
 ## Risks / Trade-offs
 

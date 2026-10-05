@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiosqlite>=0.22.1",
     "sqlcipher3>=0.6.3",
-    "tortoise-orm>=1.1.8",
+    "tortoise-orm>=1.1.8,<1.2",
 ]
 
 classifiers = [

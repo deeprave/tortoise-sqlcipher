@@ -21,3 +21,14 @@
 - [x] 4.2 Clear a failed connection setup so a later operation can retry cleanly.
 - [x] 4.3 Reject non-bytes key values before connection setup.
 - [x] 4.4 Use the driver's native key API and safely construct configurable SQLite pragmas.
+
+## 5. Accepted review follow-ups
+
+- [x] 5.1 Restore Tortoise DecimalField binding compatibility for SQLCipher and cover an ORM round trip.
+- [x] 5.2 Translate wrong-key and unreadable-ciphertext SQLCipher database failures to Tortoise OperationalError.
+- [x] 5.3 Release connection and transaction acquisition locks when initialization fails, and cover normal-operation retry behavior.
+- [x] 5.4 Preserve Tortoise TransactionManagementError semantics for failed SQLCipher transaction starts.
+- [x] 5.5 Constrain Tortoise ORM to the verified 1.1.x range.
+- [x] 5.6 Consolidate shared SQLCipher query exception translation without changing Tortoise method contracts.
+- [x] 5.7 Document the supported extra-pragma boundary and its key-management/cipher-setting foot-gun without adding enforcement.
+- [x] 5.8 Replace the obsolete bootstrap package docstring.

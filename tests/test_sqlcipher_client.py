@@ -1,17 +1,26 @@
 """Tests for the SQLCipher Tortoise client."""
 
+import asyncio
 from collections.abc import Awaitable
+from decimal import Decimal
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from tortoise import Tortoise, fields
-from tortoise.exceptions import IntegrityError, OperationalError
+from tortoise.context import TortoiseContext
+from tortoise.exceptions import IntegrityError, OperationalError, TransactionManagementError
 from tortoise.models import Model
 from tortoise.transactions import in_transaction
 
 from tortoise_sqlcipher import sqlite_sqlcipher
-from tortoise_sqlcipher.sqlite_sqlcipher import SqlCipherClient, translate_sqlcipher_exceptions
+from tortoise_sqlcipher.sqlite_sqlcipher import (
+    SqlCipherClient,
+    SqlCipherTransactionContext,
+    SqlCipherTransactionWrapper,
+    translate_sqlcipher_exceptions,
+)
 
 Result = TypeVar("Result")
 
@@ -20,6 +29,12 @@ class ConfiguredRecord(Model):
     """A model used to verify Tortoise engine configuration."""
 
     value = fields.CharField(max_length=32)
+
+
+class DecimalRecord(Model):
+    """A model used to verify DecimalField persistence through SQLCipher."""
+
+    value = fields.DecimalField(max_digits=10, decimal_places=2)
 
 
 def test_client_rejects_a_key_that_is_not_32_bytes() -> None:
@@ -83,6 +98,80 @@ async def test_client_closes_a_connection_after_invalid_pragma_setup(tmp_path: P
 
 
 @pytest.mark.anyio
+async def test_client_translates_a_wrong_key_failure(tmp_path: Path) -> None:
+    """An encrypted database opened with another key uses Tortoise's error contract."""
+    database = tmp_path / "wrong-key.sqlite"
+    first_client = SqlCipherClient(str(database), bytes.fromhex("04" * 32), connection_name="default")
+    try:
+        await first_client.create_connection(with_db=True)
+        await first_client.execute_script("CREATE TABLE records (value TEXT)")
+    finally:
+        await first_client.close()
+
+    second_client = SqlCipherClient(str(database), bytes.fromhex("05" * 32), connection_name="default")
+    try:
+        with pytest.raises(OperationalError) as error:
+            await second_client.create_connection(with_db=True)
+        assert isinstance(error.value.__cause__, sqlite_sqlcipher.sqlcipher.DatabaseError)
+    finally:
+        await second_client.close()
+
+
+@pytest.mark.anyio
+async def test_client_retries_a_normal_operation_after_connection_setup_fails(tmp_path: Path) -> None:
+    """A failed normal acquisition releases the lock for a later retry."""
+    database = tmp_path / "missing" / "retry.sqlite"
+    client = SqlCipherClient(str(database), bytes.fromhex("06" * 32), connection_name="default")
+    try:
+        with pytest.raises(OperationalError):
+            await client.execute_query("SELECT 1")
+
+        database.parent.mkdir()
+        count, _ = await asyncio.wait_for(client.execute_query("SELECT 1"), timeout=1)
+        assert count == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_transaction_begin_translates_sqlcipher_operational_errors() -> None:
+    """SQLCipher BEGIN failures retain Tortoise's transaction-management contract."""
+    client = SqlCipherClient("encrypted.sqlite", bytes.fromhex("07" * 32), connection_name="default")
+    transaction = SqlCipherTransactionWrapper(client)
+    connection = AsyncMock()
+    connection.execute.side_effect = sqlite_sqlcipher.sqlcipher.OperationalError("database is locked")
+    transaction._connection = cast(Any, connection)
+
+    context = SqlCipherTransactionContext(transaction, asyncio.Lock())
+    async with TortoiseContext():
+        with pytest.raises(TransactionManagementError) as error:
+            await context.__aenter__()
+
+        assert isinstance(error.value.__cause__, sqlite_sqlcipher.sqlcipher.OperationalError)
+        with pytest.raises(TransactionManagementError):
+            await asyncio.wait_for(context.__aenter__(), timeout=1)
+
+
+@pytest.mark.anyio
+async def test_transaction_retries_after_connection_setup_fails(tmp_path: Path) -> None:
+    """A failed transaction entry releases its acquisition lock for a later retry."""
+    database = tmp_path / "missing" / "transaction-retry.sqlite"
+    client = SqlCipherClient(str(database), bytes.fromhex("08" * 32), connection_name="default")
+    try:
+        async with TortoiseContext():
+            with pytest.raises(OperationalError):
+                async with client._in_transaction():
+                    pass
+
+            database.parent.mkdir()
+            async with client._in_transaction() as connection:
+                count, _ = await connection.execute_query("SELECT 1")
+            assert count == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
 async def test_tortoise_loads_the_sqlcipher_engine_from_configuration(tmp_path: Path) -> None:
     """The engine remains discoverable as a SQLite backend through Tortoise config."""
     config = {
@@ -102,6 +191,10 @@ async def test_tortoise_loads_the_sqlcipher_engine_from_configuration(tmp_path: 
     try:
         await Tortoise.generate_schemas()
         await ConfiguredRecord.create(value="configured")
+        await DecimalRecord.create(value=Decimal("12.34"))
+        decimal_record = await DecimalRecord.filter(value=Decimal("12.34")).first()
+        assert decimal_record is not None
+        assert decimal_record.value == Decimal("12.34")
 
         async with in_transaction() as connection:
             await connection.execute_script("CREATE TABLE transaction_records (id INTEGER PRIMARY KEY, value TEXT)")

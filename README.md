@@ -26,6 +26,14 @@ The engine validates that the supplied key is exactly 32 bytes and never falls
 back to plaintext SQLite. Applications remain responsible for obtaining,
 storing, and rotating their encryption keys.
 
+### SQLCipher pragmas
+
+Additional connection credentials are applied as SQLCipher pragmas after the
+key is set. This permits necessary SQLCipher tuning, but it is also a foot-gun:
+key-management pragmas such as `key`, `rekey`, and `hexkey`, plus `cipher_*`
+settings, can alter the database's encryption configuration. Only supply extra
+pragmas when your application deliberately owns that configuration.
+
 ## Supported Python versions
 
 Python 3.11 and later are fully supported.

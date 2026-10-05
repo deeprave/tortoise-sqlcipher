@@ -1,5 +1,5 @@
-"""Tortoise ORM support for SQLCipher-encrypted SQLite databases.
+"""Tortoise ORM engine support for SQLCipher-encrypted SQLite databases.
 
-The backend implementation is intentionally not part of the initial project
-bootstrap.
+Configure ``tortoise_sqlcipher.sqlite_sqlcipher`` with a 32-byte encryption
+key to use the backend.
 """
