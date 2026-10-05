@@ -30,3 +30,4 @@
 - [x] 5.6 Split migrated rollback and concurrent-write coverage into focused tests; verify each scenario independently.
 - [x] 5.7 Move native SQLCipher rekey/backup access into test support and verify the rekeyed source and backup through the package engine using the replacement key.
 - [x] 5.8 Run focused remediation tests, the complete configured pre-commit suite, and the supported Python-version matrix; verify all checks pass.
+- [x] 5.9 Run scalar-matrix fixture setup inside its fixture-level try/finally so failed initialization closes Tortoise connections without moving cleanup into tests.

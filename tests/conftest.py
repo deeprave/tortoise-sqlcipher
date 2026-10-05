@@ -49,9 +49,9 @@ async def tortoise_database(tmp_path: Path) -> AsyncIterator[DatabaseInitializer
 async def scalar_matrix_database(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Path]:
     """Create one encrypted database for isolated, parametrized scalar rows."""
     database_path = tmp_path_factory.mktemp("scalar-matrix") / "fields.sqlite"
-    await Tortoise.init(config=database_config(database_path))
-    await Tortoise.generate_schemas()
     try:
+        await Tortoise.init(config=database_config(database_path))
+        await Tortoise.generate_schemas()
         yield database_path
     finally:
         await close_tortoise_connections()
