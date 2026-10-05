@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+.ruff_cache/
+.ty/
+.pytest_cache/
+.osvcheck_cache
+.DS_Store
+.todo/context.json

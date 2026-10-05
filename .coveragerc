@@ -1,0 +1,9 @@
+[run]
+source = src/tortoise_sqlcipher
+branch = true
+
+[report]
+show_missing = true
+fail_under = 100
+exclude_also =
+    if TYPE_CHECKING:

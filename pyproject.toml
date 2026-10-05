@@ -1,0 +1,66 @@
+[project]
+name = "tortoise-sqlcipher"
+version = "0.1.0"
+description = "Tortoise ORM backend support for SQLCipher-encrypted SQLite databases"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "David Nugent", email = "davidn@uniquode.io" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["error"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=src/tortoise_sqlcipher",
+    "--cov-report=term-missing",
+]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["I", "F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tortoise_sqlcipher"]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "coverage>=7.16.2",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
