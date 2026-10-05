@@ -16,9 +16,16 @@ or PostgreSQL encryption support.
 
 ## Supported Python versions
 
-Python 3.11, 3.12, and 3.13 are supported.
+Python 3.11 and later are fully supported.
 
 ## Development
 
 Install the project environment with `uv sync`, then run the repository checks
 with `uv run pre-commit run --all-files`.
+
+## Publishing
+
+Releases are built through the manually dispatched GitHub Actions workflow.
+Before the first production release, configure PyPI Trusted Publishing for
+`deeprave/tortoise-sqlcipher` and its `pypi` GitHub Actions environment. No
+PyPI token is stored in this repository.

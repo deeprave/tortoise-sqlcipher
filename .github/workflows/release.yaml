@@ -1,0 +1,103 @@
+name: Release
+
+# PyPI publishing uses Trusted Publishing (OIDC). Before the first non-dry-run
+# release, configure PyPI to trust this repository, this workflow, and the
+# `pypi` environment at https://pypi.org/manage/account/publishing/.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and validate without publishing or creating a release
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run checks
+        run: |
+          uv run pytest -Walways -Werror --cov --cov-config=.coveragerc
+          uv run ruff check
+          uv run ruff format --check src/ tests/ --exclude '*.md'
+          uv run ty check src/
+
+      - name: Build package
+        run: uv build
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: validate-and-build
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        if: ${{ github.event.inputs.dry-run != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+      - name: Show PyPI dry-run output
+        if: ${{ github.event.inputs.dry-run == 'true' }}
+        run: ls -lh dist/
+
+  create-release:
+    needs: [validate-and-build, publish-pypi]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.dry-run != 'true' }}
+
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ needs.validate-and-build.outputs.version }}" \
+            --title "Release v${{ needs.validate-and-build.outputs.version }}" \
+            --generate-notes \
+            ${{ github.event.inputs.prerelease == 'true' && '--prerelease' || '--latest' }}
