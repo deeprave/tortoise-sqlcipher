@@ -7,6 +7,25 @@ encrypted SQLite database and sidecar boundaries.
 
 ## ADDED Requirements
 
+### Requirement: SQLite-supported Tortoise field compatibility
+The test suite SHALL verify round-trip persistence through the package engine
+for every built-in Tortoise data field and standard relation variant supported
+by the SQLite backend. The matrix SHALL include `TimeField` and `TimeDeltaField`
+values that cross the DB-API binding boundary, and SHALL record documented
+upstream SQLite limitations rather than misclassifying them as backend failures.
+
+#### Scenario: Integration test persists a field matrix
+- **WHEN** the integration suite writes and reloads values for the
+  SQLite-supported Tortoise field and relation matrix
+- **THEN** each persisted value and relation has the same behavior expected
+  from Tortoise's SQLite backend
+
+#### Scenario: TimeField uses its known upstream SQLite limitation
+- **WHEN** the integration suite persists a TimeField value through the package
+  engine
+- **THEN** the test records the expected Tortoise SQLite limitation and verifies
+  that SQLCipher does not introduce a different failure mode
+
 ### Requirement: Fully encrypted storage
 The test suite SHALL verify that every database file and live WAL/journal
 sidecar created through the engine is SQLCipher-encrypted: it SHALL not contain
