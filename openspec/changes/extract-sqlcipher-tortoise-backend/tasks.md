@@ -2,16 +2,15 @@
 
 ## 1. Runtime package contract
 
-- [ ] 1.1 Add Tortoise ORM, aiosqlite, and sqlcipher3 runtime dependencies at the proof-established lower bounds; verify `uv sync` resolves and `uv build` produces both artifacts.
-- [ ] 1.2 Add the SQLCipher Tortoise engine module under `tortoise_sqlcipher` and adapt its type annotations to Python 3.11; verify Ruff and ty pass.
+- [x] 1.1 Add Tortoise ORM, aiosqlite, and sqlcipher3 runtime dependencies at the proof-established lower bounds; verify `uv sync` resolves and `uv build` produces both artifacts.
+- [x] 1.2 Add the SQLCipher Tortoise engine module under `tortoise_sqlcipher` and adapt its type annotations to Python 3.11; verify Ruff and ty pass.
 
 ## 2. Encrypted connection behavior
 
-- [ ] 2.1 Implement validated 32-byte key handling and SQLCipher connection initialization before database access; verify focused key-validation and connection tests pass.
-- [ ] 2.2 Preserve Tortoise SQLite pragmas, post-connect handling, result rows, and SQLite migration recognition; verify the engine is importable through a Tortoise configuration.
-- [ ] 2.3 Translate SQLCipher operational and integrity errors to Tortoise exceptions; verify focused exception-translation tests pass.
+- [x] 2.1 Implement validated 32-byte key handling and SQLCipher connection initialization before database access; verify focused key-validation and connection tests pass.
+- [x] 2.2 Preserve Tortoise SQLite pragmas, post-connect handling, result rows, and SQLite migration recognition; verify the engine is importable through a Tortoise configuration.
+- [x] 2.3 Translate SQLCipher operational and integrity errors to Tortoise exceptions; verify focused exception-translation tests pass.
 
 ## 3. Package verification
 
-- [ ] 3.1 Export only the intended package surface and update package documentation for engine configuration prerequisites; verify the README makes no secret-management claim.
-- [ ] 3.2 Run the configured pre-commit suite, Python 3.11–3.13 tests, and `uv build`; verify all checks pass before marking the change complete.
+- [x] 3.1 Export only the intended package surface and update package documentation for engine configuration prerequisites; verify the README makes no secret-management claim.

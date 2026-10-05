@@ -1,18 +1,30 @@
 # tortoise-sqlcipher
 
-`tortoise-sqlcipher` will provide a Tortoise ORM-specific SQLite backend using
+`tortoise-sqlcipher` provides a Tortoise ORM-specific SQLite backend using
 SQLCipher and `aiosqlite` for encrypted local databases.
 
-## Status
+## Configuration
 
-This is the initial project-infrastructure release. The backend is not yet
-implemented and this package does not yet expose database configuration or
-encryption APIs.
+Configure Tortoise with the `tortoise_sqlcipher.sqlite_sqlcipher` engine and a
+32-byte encryption key:
 
-The planned backend scope includes encrypted SQLite databases, Tortoise ORM
-operations, transactions, migrations, rekeying, and encrypted backup/restore.
-It does not provide a generic encryption abstraction, secret-management policy,
-or PostgreSQL encryption support.
+```python
+{
+    "connections": {
+        "default": {
+            "engine": "tortoise_sqlcipher.sqlite_sqlcipher",
+            "credentials": {
+                "file_path": "encrypted.sqlite",
+                "encryption_key": encryption_key,
+            },
+        }
+    }
+}
+```
+
+The engine validates that the supplied key is exactly 32 bytes and never falls
+back to plaintext SQLite. Applications remain responsible for obtaining,
+storing, and rotating their encryption keys.
 
 ## Supported Python versions
 
