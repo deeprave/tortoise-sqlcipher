@@ -14,3 +14,10 @@
 ## 3. Package verification
 
 - [x] 3.1 Export only the intended package surface and update package documentation for engine configuration prerequisites; verify the README makes no secret-management claim.
+
+## 4. Accepted review follow-ups
+
+- [x] 4.1 Translate SQLCipher failures during connection setup and transaction operations.
+- [x] 4.2 Clear a failed connection setup so a later operation can retry cleanly.
+- [x] 4.3 Reject non-bytes key values before connection setup.
+- [x] 4.4 Use the driver's native key API and safely construct configurable SQLite pragmas.
