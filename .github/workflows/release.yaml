@@ -93,6 +93,8 @@ jobs:
     if: ${{ github.event.inputs.dry-run != 'true' }}
 
     steps:
+      - uses: actions/checkout@v7
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
