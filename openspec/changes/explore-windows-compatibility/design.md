@@ -23,7 +23,7 @@ inspects a live WAL sidecar before Tortoise closes its connection.
   reviewed.
 - Expand the normal pull-request matrix to every Windows/Python combination
   during investigation.
-- Change the backend's runtime behavior solely to accommodate a test runner.
+- Change the backend's runtime behaviour solely to accommodate a test runner.
 
 ## Decisions
 

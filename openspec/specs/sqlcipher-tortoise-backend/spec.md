@@ -19,7 +19,7 @@ encryption key before database operations occur.
 
 #### Scenario: Application supplies an invalid key length
 - **WHEN** an application configures an encryption key that is not 32 bytes
-- **THEN** engine initialization raises a value error before opening the
+- **THEN** engine initialisation raises a value error before opening the
   database
 
 ### Requirement: Tortoise error compatibility
@@ -33,10 +33,10 @@ corresponding Tortoise exception types.
   exception
 
 ### Requirement: SQLite migration compatibility
-The engine SHALL remain recognizable as a SQLite engine to Tortoise's native
+The engine SHALL remain recognisable as a SQLite engine to Tortoise's native
 migration support.
 
 #### Scenario: Application runs a native migration
 - **WHEN** Tortoise executes a native migration using the package engine
-- **THEN** it selects its SQLite schema behavior and creates a compatible
+- **THEN** it selects its SQLite schema behaviour and creates a compatible
   migration recorder

@@ -4,7 +4,7 @@
 
 The source ADR is scoped to an authentication-provider persistence proof. See
 proposal.md for why the library needs a separate record; this design confines
-the documentation to reusable package behavior and consumer responsibilities.
+the documentation to reusable package behaviour and consumer responsibilities.
 
 ## Goals / Non-Goals
 
@@ -21,11 +21,11 @@ the documentation to reusable package behavior and consumer responsibilities.
 
 ## Decisions
 
-- Create a library-owned ADR under `openspec/adr/` rather than copying the
-  provider ADR verbatim. It will describe the selected Tortoise integration,
-  SQLCipher connector boundary, SQLite migration requirement, and known
-  platform evidence. This avoids presenting provider-specific key lifecycle as
-  library functionality.
+- Create a library-owned `ARCHITECTURE.md` rather than copying the provider ADR
+  verbatim. It will describe the selected Tortoise integration, SQLCipher
+  connector boundary, SQLite migration requirement, and known platform
+  evidence. This avoids presenting provider-specific key lifecycle as library
+  functionality.
 - Separate evidence from guarantees. The ADR will describe what encrypted
   database/WAL testing establishes, while clearly assigning key acquisition,
   rotation policy, backup retention, and recovery operations to consuming
@@ -45,6 +45,6 @@ the documentation to reusable package behavior and consumer responsibilities.
 
 ## Migration Plan
 
-Add the ADR and README cross-reference without changing application data or
-requiring consumer migration. Keep provider-specific ADR history in
-`auth-guide` as the original source record.
+Add `ARCHITECTURE.md` and package-relevant README badges without changing
+application data or requiring consumer migration. Keep provider-specific ADR
+history in `auth-guide` as the original source record.

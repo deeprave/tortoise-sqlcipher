@@ -1,5 +1,11 @@
 # tortoise-sqlcipher
 
+[![Build Status](https://img.shields.io/github/actions/workflow/status/deeprave/tortoise-sqlcipher/test.yaml?branch=main&label=tests&logo=github)](https://github.com/deeprave/tortoise-sqlcipher/actions/workflows/test.yaml)
+[![Maintenance](https://img.shields.io/badge/maintenance-active-brightgreen.svg)](https://github.com/deeprave/tortoise-sqlcipher)
+[![PyPI version](https://img.shields.io/pypi/v/tortoise-sqlcipher.svg?logo=pypi&logoColor=white)](https://pypi.org/project/tortoise-sqlcipher/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/tortoise-sqlcipher.svg?logo=pypi&logoColor=white)](https://pypi.org/project/tortoise-sqlcipher/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tortoise-sqlcipher.svg?logo=python&logoColor=white)](https://pypi.org/project/tortoise-sqlcipher/)
+
 `tortoise-sqlcipher` provides a Tortoise ORM-specific SQLite backend using
 SQLCipher and `aiosqlite` for encrypted local databases.
 
@@ -14,7 +20,7 @@ Configure Tortoise with the `tortoise_sqlcipher.sqlite_sqlcipher` engine and a
         "default": {
             "engine": "tortoise_sqlcipher.sqlite_sqlcipher",
             "credentials": {
-                "file_path": "encrypted.sqlite",
+                "file_path": "encrypted.sqlite3",
                 "encryption_key": encryption_key,
             },
         }
@@ -36,16 +42,4 @@ pragmas when your application deliberately owns that configuration.
 
 ## Supported Python versions
 
-Python 3.11 and later are fully supported.
-
-## Development
-
-Install the project environment with `uv sync`, then run the repository checks
-with `uv run pre-commit run --all-files`.
-
-## Publishing
-
-Releases are built through the manually dispatched GitHub Actions workflow.
-Before the first production release, configure PyPI Trusted Publishing for
-`deeprave/tortoise-sqlcipher` and its `pypi` GitHub Actions environment. No
-PyPI token is stored in this repository.
+Requires Python 3.11+.

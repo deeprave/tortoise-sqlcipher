@@ -9,8 +9,8 @@ responsibilities that remain with applications.
 
 ## What Changes
 
-- Adapt the source SQLCipher persistence ADR into a library-owned decision
-  record.
+- Adapt the source SQLCipher persistence ADR into the library-owned
+  `ARCHITECTURE.md` document.
 - Describe the package's Tortoise-specific engine contract, why stock Tortoise
   SQLite cannot transparently use SQLCipher, and why the backend module keeps
   `sqlite` in its name.
@@ -25,5 +25,5 @@ This is documentation-only and introduces no runtime requirement changes.
 
 ## Impact
 
-Adds library ADR documentation and later README cross-references. It does not
-change code, runtime dependencies, or the public backend behavior.
+Adds library architecture documentation and user-facing README badges. It does not
+change code, runtime dependencies, or the public backend behaviour.

@@ -4,7 +4,7 @@
 
 The package has no explicit Windows support decision while its SQLCipher
 dependency publishes Windows wheels. The encrypted-storage test reads a live
-WAL sidecar, whose file-sharing behavior may differ on Windows from the
+WAL sidecar, whose file-sharing behaviour may differ on Windows from the
 currently verified macOS environment.
 
 ## What Changes
@@ -12,7 +12,7 @@ currently verified macOS environment.
 - Establish whether supported CPython and `sqlcipher3` combinations install
   and pass the package test suite on GitHub-hosted Windows runners.
 - Determine whether Windows permits the live-WAL inspection needed for the
-  encrypted-storage assertion, and identify a behavior-preserving test design
+  encrypted-storage assertion, and identify a behaviour-preserving test design
   if it does not.
 - Document the evidence and make an explicit recommendation to support or
   exclude Windows; do not add a Windows compatibility claim until that decision
