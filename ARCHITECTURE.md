@@ -25,6 +25,11 @@ errors are translated to the corresponding Tortoise exceptions. Connection and
 transaction setup release their locks when initialisation fails so a failed
 attempt does not block a later retry.
 
+Configure one Tortoise alias for each encrypted database file. Multiple aliases
+for the same file have independent SQLite connections and transaction
+lifecycles; package maintenance operations coordinate only the client that
+owns the operation and cannot make that configuration safe.
+
 ## Encryption boundary
 
 The backend requires a 32-byte key and does not fall back to plaintext SQLite.

@@ -1,7 +1,8 @@
 """SQLCipher-backed SQLite client for Tortoise ORM."""
 
 import sqlite3
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from functools import wraps
 from importlib import import_module
@@ -11,7 +12,7 @@ import aiosqlite
 from tortoise.backends.base.client import ConnectionWrapper, NestedTransactionContext, TransactionContext
 from tortoise.backends.sqlite.client import SqliteClient, SqliteTransactionContext, SqliteTransactionWrapper
 from tortoise.connection import get_connections
-from tortoise.exceptions import IntegrityError, OperationalError, TransactionManagementError
+from tortoise.exceptions import ConfigurationError, IntegrityError, OperationalError, TransactionManagementError
 
 Parameters = ParamSpec("Parameters")
 Result = TypeVar("Result")
@@ -163,6 +164,43 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
 
     def acquire_connection(self) -> SqlCipherConnectionWrapper:
         return SqlCipherConnectionWrapper(self._lock, self)
+
+    def _has_active_transaction(self) -> bool:
+        """Return whether this task holds a transaction for this client."""
+        try:
+            current_connection = get_connections().get(self.connection_name)
+        except (ConfigurationError, RuntimeError):
+            return False
+        return isinstance(current_connection, SqlCipherTransactionWrapper) and current_connection._parent is self
+
+    @asynccontextmanager
+    async def _maintenance_connection(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Acquire exclusive client access for a database maintenance operation."""
+        if self._has_active_transaction():
+            msg = "Database maintenance cannot run inside an active transaction"
+            raise TransactionManagementError(msg)
+        async with self.acquire_connection() as connection:
+            yield connection
+
+    async def _close_connection(self) -> None:
+        """Close the current connection while the caller owns the client boundary."""
+        if self._connection:
+            await self._connection.close()
+            self.log.debug(
+                "Closed connection %s with params: filename=%s %s",
+                self._connection,
+                self.filename,
+                " ".join(f"{key}={value}" for key, value in self.pragmas.items()),
+            )
+            self._connection = None
+
+    async def close(self) -> None:
+        """Close the client connection without racing maintenance operations."""
+        if self._has_active_transaction():
+            msg = "Database connection cannot close inside an active transaction"
+            raise TransactionManagementError(msg)
+        async with self._lock:
+            await self._close_connection()
 
 
 class SqlCipherTransactionWrapper(SqlCipherQueryMixin, SqliteTransactionWrapper):

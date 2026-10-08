@@ -2,6 +2,7 @@
 SqlCipherClient.create_connection  # unused method (Tortoise lifecycle hook)
 SqlCipherClient.acquire_connection  # unused method (Tortoise connection-acquisition hook)
 SqlCipherClient._in_transaction  # unused method (Tortoise transaction hook)
+SqlCipherClient._maintenance_connection  # unused method (public maintenance-operation hook)
 SqlCipherTransactionWrapper._in_transaction  # unused method (Tortoise nested transaction hook)
 _.row_factory  # unused attribute (aiosqlite connection configuration)
 client_class  # unused variable (Tortoise engine entrypoint)
