@@ -37,8 +37,45 @@ class DecimalRecord(Model):
     value = fields.DecimalField(max_digits=10, decimal_places=2)
 
 
+class ObservingConnectionWrapper(sqlite_sqlcipher.SqlCipherConnectionWrapper):
+    """Record when normal work has acquired the client's connection boundary."""
+
+    async def __aenter__(self) -> Any:
+        connection = await super().__aenter__()
+        cast(Any, self.client).connection_acquired.set()
+        return connection
+
+
+class ObservingTransactionContext(SqlCipherTransactionContext):
+    """Record transaction attempts and successful boundary acquisition."""
+
+    async def __aenter__(self) -> SqlCipherTransactionWrapper:
+        client = self.connection._parent
+        client.transaction_attempted.set()
+        connection = await super().__aenter__()
+        client.transaction_acquired.set()
+        return connection
+
+
 class MaintenanceTestClient(SqlCipherClient):
     """Expose a controlled maintenance operation for client-lifecycle tests."""
+
+    def __init__(self, file_path: str, encryption_key: bytes, **kwargs: object) -> None:
+        super().__init__(file_path, encryption_key, **kwargs)
+        self.connection_acquired = asyncio.Event()
+        self.transaction_attempted = asyncio.Event()
+        self.transaction_acquired = asyncio.Event()
+        self.connection_close_started = asyncio.Event()
+
+    def acquire_connection(self) -> ObservingConnectionWrapper:
+        return ObservingConnectionWrapper(self._lock, self)
+
+    def _in_transaction(self) -> ObservingTransactionContext:
+        return ObservingTransactionContext(SqlCipherTransactionWrapper(self), self._lock)
+
+    async def _close_connection(self) -> None:
+        self.connection_close_started.set()
+        await super()._close_connection()
 
     async def hold_maintenance(self, acquired: asyncio.Event, release: asyncio.Event) -> None:
         """Hold the package's internal maintenance boundary until released."""
@@ -110,6 +147,21 @@ async def test_client_closes_a_connection_after_invalid_pragma_setup(tmp_path: P
         assert (await client.execute_query("SELECT 1"))[0] == 1
     finally:
         await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_close_log_does_not_include_pragma_values(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Diagnostic closure logging must not expose configured SQLCipher key material."""
+    client = SqlCipherClient(str(tmp_path / "close-log.sqlite"), b"l" * 32, connection_name="default")
+    await client.create_connection(with_db=True)
+    client.pragmas["key"] = "sensitive-key-material"
+
+    with caplog.at_level("DEBUG"):
+        await client.close()
+
+    assert "sensitive-key-material" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -195,14 +247,22 @@ async def test_normal_query_waits_for_maintenance_to_release_the_connection(tmp_
     try:
         maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
         await asyncio.wait_for(acquired.wait(), timeout=1)
-        query = asyncio.create_task(client.execute_query("SELECT 1"))
+        client.connection_acquired.clear()
+        query_attempted = asyncio.Event()
 
-        await asyncio.sleep(0)
-        assert not query.done()
+        async def run_query() -> tuple[int, Any]:
+            query_attempted.set()
+            return await client.execute_query("SELECT 1")
+
+        query = asyncio.create_task(run_query())
+
+        await asyncio.wait_for(query_attempted.wait(), timeout=1)
+        assert not client.connection_acquired.is_set()
 
         release.set()
         await maintenance
         assert (await query)[0] == 1
+        assert client.connection_acquired.is_set()
     finally:
         await client.close()
 
@@ -249,14 +309,21 @@ async def test_client_close_waits_for_maintenance_to_release_the_connection(tmp_
     try:
         maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
         await asyncio.wait_for(acquired.wait(), timeout=1)
-        close = asyncio.create_task(client.close())
+        close_attempted = asyncio.Event()
 
-        await asyncio.sleep(0)
-        assert not close.done()
+        async def close_client() -> None:
+            close_attempted.set()
+            await client.close()
+
+        close = asyncio.create_task(close_client())
+
+        await asyncio.wait_for(close_attempted.wait(), timeout=1)
+        assert not client.connection_close_started.is_set()
 
         release.set()
         await maintenance
         await close
+        assert client.connection_close_started.is_set()
         assert client._connection is None
     finally:
         if client._connection is not None:
@@ -282,12 +349,13 @@ async def test_transaction_waits_for_maintenance_to_release_the_connection(tmp_p
             await asyncio.wait_for(acquired.wait(), timeout=1)
             transaction = asyncio.create_task(run_transaction())
 
-            await asyncio.sleep(0)
-            assert not transaction.done()
+            await asyncio.wait_for(client.transaction_attempted.wait(), timeout=1)
+            assert not client.transaction_acquired.is_set()
 
             release.set()
             await maintenance
             assert await transaction == 1
+            assert client.transaction_acquired.is_set()
     finally:
         await client.close()
 

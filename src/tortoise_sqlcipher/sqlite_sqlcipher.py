@@ -187,10 +187,9 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
         if self._connection:
             await self._connection.close()
             self.log.debug(
-                "Closed connection %s with params: filename=%s %s",
+                "Closed connection %s for filename=%s",
                 self._connection,
                 self.filename,
-                " ".join(f"{key}={value}" for key, value in self.pragmas.items()),
             )
             self._connection = None
 
