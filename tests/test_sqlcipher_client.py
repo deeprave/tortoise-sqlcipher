@@ -37,6 +37,58 @@ class DecimalRecord(Model):
     value = fields.DecimalField(max_digits=10, decimal_places=2)
 
 
+class ObservingConnectionWrapper(sqlite_sqlcipher.SqlCipherConnectionWrapper):
+    """Record when normal work has acquired the client's connection boundary."""
+
+    async def __aenter__(self) -> Any:
+        connection = await super().__aenter__()
+        cast(Any, self.client).connection_acquired.set()
+        return connection
+
+
+class ObservingTransactionContext(SqlCipherTransactionContext):
+    """Record transaction attempts and successful boundary acquisition."""
+
+    async def __aenter__(self) -> SqlCipherTransactionWrapper:
+        client = self.connection._parent
+        client.transaction_attempted.set()
+        connection = await super().__aenter__()
+        client.transaction_acquired.set()
+        return connection
+
+
+class MaintenanceTestClient(SqlCipherClient):
+    """Expose a controlled maintenance operation for client-lifecycle tests."""
+
+    def __init__(self, file_path: str, encryption_key: bytes, **kwargs: object) -> None:
+        super().__init__(file_path, encryption_key, **kwargs)
+        self.connection_acquired = asyncio.Event()
+        self.transaction_attempted = asyncio.Event()
+        self.transaction_acquired = asyncio.Event()
+        self.connection_close_started = asyncio.Event()
+
+    def acquire_connection(self) -> ObservingConnectionWrapper:
+        return ObservingConnectionWrapper(self._lock, self)
+
+    def _in_transaction(self) -> ObservingTransactionContext:
+        return ObservingTransactionContext(SqlCipherTransactionWrapper(self), self._lock)
+
+    async def _close_connection(self) -> None:
+        self.connection_close_started.set()
+        await super()._close_connection()
+
+    async def hold_maintenance(self, acquired: asyncio.Event, release: asyncio.Event) -> None:
+        """Hold the package's internal maintenance boundary until released."""
+        async with self._maintenance_connection():
+            acquired.set()
+            await release.wait()
+
+    async def fail_maintenance(self) -> None:
+        """Raise after obtaining exclusive access for failure-path tests."""
+        async with self._maintenance_connection():
+            raise RuntimeError("maintenance failed")
+
+
 def test_client_rejects_a_key_that_is_not_32_bytes() -> None:
     """The client fails before attempting a connection for an invalid key."""
     with pytest.raises(ValueError, match="exactly 32 bytes"):
@@ -95,6 +147,21 @@ async def test_client_closes_a_connection_after_invalid_pragma_setup(tmp_path: P
         assert (await client.execute_query("SELECT 1"))[0] == 1
     finally:
         await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_close_log_does_not_include_pragma_values(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Diagnostic closure logging must not expose configured SQLCipher key material."""
+    client = SqlCipherClient(str(tmp_path / "close-log.sqlite"), b"l" * 32, connection_name="default")
+    await client.create_connection(with_db=True)
+    client.pragmas["key"] = "sensitive-key-material"
+
+    with caplog.at_level("DEBUG"):
+        await client.close()
+
+    assert "sensitive-key-material" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -167,6 +234,184 @@ async def test_transaction_retries_after_connection_setup_fails(tmp_path: Path) 
             async with client._in_transaction() as connection:
                 count, _ = await connection.execute_query("SELECT 1")
             assert count == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_normal_query_waits_for_maintenance_to_release_the_connection(tmp_path: Path) -> None:
+    """Normal work waits for the maintenance boundary and uses its resulting connection."""
+    client = MaintenanceTestClient(str(tmp_path / "maintenance-query.sqlite"), b"m" * 32, connection_name="default")
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+        client.connection_acquired.clear()
+        query_attempted = asyncio.Event()
+
+        async def run_query() -> tuple[int, Any]:
+            query_attempted.set()
+            return await client.execute_query("SELECT 1")
+
+        query = asyncio.create_task(run_query())
+
+        await asyncio.wait_for(query_attempted.wait(), timeout=1)
+        assert not client.connection_acquired.is_set()
+
+        release.set()
+        await maintenance
+        assert (await query)[0] == 1
+        assert client.connection_acquired.is_set()
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_maintenance_requested_inside_transaction_fails_without_waiting(tmp_path: Path) -> None:
+    """Maintenance cannot re-enter the connection boundary held by its transaction."""
+    client = MaintenanceTestClient(
+        str(tmp_path / "maintenance-transaction.sqlite"), b"t" * 32, connection_name="default"
+    )
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        async with TortoiseContext():
+            async with client._in_transaction():
+                with pytest.raises(TransactionManagementError):
+                    await asyncio.wait_for(client.hold_maintenance(acquired, release), timeout=1)
+        assert not acquired.is_set()
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_close_inside_transaction_fails_without_waiting(tmp_path: Path) -> None:
+    """Connection closure cannot re-enter the client boundary held by its transaction."""
+    client = MaintenanceTestClient(
+        str(tmp_path / "maintenance-close-transaction.sqlite"), b"z" * 32, connection_name="default"
+    )
+    try:
+        async with TortoiseContext():
+            async with client._in_transaction():
+                with pytest.raises(TransactionManagementError):
+                    await asyncio.wait_for(client.close(), timeout=1)
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_close_waits_for_maintenance_to_release_the_connection(tmp_path: Path) -> None:
+    """Connection shutdown does not close a connection while maintenance owns it."""
+    client = MaintenanceTestClient(str(tmp_path / "maintenance-close.sqlite"), b"c" * 32, connection_name="default")
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+        close_attempted = asyncio.Event()
+
+        async def close_client() -> None:
+            close_attempted.set()
+            await client.close()
+
+        close = asyncio.create_task(close_client())
+
+        await asyncio.wait_for(close_attempted.wait(), timeout=1)
+        assert not client.connection_close_started.is_set()
+
+        release.set()
+        await maintenance
+        await close
+        assert client.connection_close_started.is_set()
+        assert client._connection is None
+    finally:
+        if client._connection is not None:
+            await client.close()
+
+
+@pytest.mark.anyio
+async def test_transaction_waits_for_maintenance_to_release_the_connection(tmp_path: Path) -> None:
+    """A transaction started elsewhere waits for a usable post-maintenance connection."""
+    client = MaintenanceTestClient(
+        str(tmp_path / "maintenance-transaction-wait.sqlite"), b"w" * 32, connection_name="default"
+    )
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run_transaction() -> int:
+        async with client._in_transaction() as connection:
+            return (await connection.execute_query("SELECT 1"))[0]
+
+    try:
+        async with TortoiseContext():
+            maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
+            await asyncio.wait_for(acquired.wait(), timeout=1)
+            transaction = asyncio.create_task(run_transaction())
+
+            await asyncio.wait_for(client.transaction_attempted.wait(), timeout=1)
+            assert not client.transaction_acquired.is_set()
+
+            release.set()
+            await maintenance
+            assert await transaction == 1
+            assert client.transaction_acquired.is_set()
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_maintenance_operations_do_not_interleave(tmp_path: Path) -> None:
+    """A second maintenance operation waits until the first releases the client."""
+    client = MaintenanceTestClient(str(tmp_path / "maintenance-serial.sqlite"), b"s" * 32, connection_name="default")
+    first_acquired = asyncio.Event()
+    first_release = asyncio.Event()
+    second_acquired = asyncio.Event()
+    second_release = asyncio.Event()
+    try:
+        first = asyncio.create_task(client.hold_maintenance(first_acquired, first_release))
+        await asyncio.wait_for(first_acquired.wait(), timeout=1)
+        second = asyncio.create_task(client.hold_maintenance(second_acquired, second_release))
+
+        await asyncio.sleep(0)
+        assert not second_acquired.is_set()
+
+        first_release.set()
+        await first
+        await asyncio.wait_for(second_acquired.wait(), timeout=1)
+        second_release.set()
+        await second
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_cancelling_maintenance_releases_the_connection_boundary(tmp_path: Path) -> None:
+    """Cancellation before a durable operation leaves ordinary client work available."""
+    client = MaintenanceTestClient(str(tmp_path / "maintenance-cancel.sqlite"), b"k" * 32, connection_name="default")
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        maintenance = asyncio.create_task(client.hold_maintenance(acquired, release))
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+        maintenance.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await maintenance
+
+        assert (await client.execute_query("SELECT 1"))[0] == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_failing_maintenance_releases_the_connection_boundary(tmp_path: Path) -> None:
+    """A maintenance failure leaves ordinary client work available."""
+    client = MaintenanceTestClient(str(tmp_path / "maintenance-failure.sqlite"), b"f" * 32, connection_name="default")
+    try:
+        with pytest.raises(RuntimeError, match="maintenance failed"):
+            await client.fail_maintenance()
+
+        assert (await client.execute_query("SELECT 1"))[0] == 1
     finally:
         await client.close()
 
