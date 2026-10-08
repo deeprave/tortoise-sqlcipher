@@ -44,19 +44,37 @@ the first API small.
 ### Run snapshot work inside the shared maintenance boundary
 
 Backup and restore acquire the maintenance coordination boundary before
-quiescing or changing client state.  Restore closes the active connection only
-after its candidate is fully opened and validated with the configured key.
+quiescing or changing client state. File-backed restore closes the active
+connection only after its candidate is fully opened and validated with the
+configured key.
 
 Operating on a concurrently used connection risks a partial view; closing the
 active database before validation would make an invalid snapshot destructive.
+
+Backup accepts memory and temporary databases as sources and uses SQLCipher's
+native backup operation to write a persistent encrypted snapshot. It does not
+close the source connection. Both snapshot operations use the client's
+`is_mem_db()` result, rather than configured-path parsing, to select their
+source or restore path.
+
+Restore into a memory or temporary database uses a separate path: it validates
+the persistent snapshot, creates an operation-local rollback candidate from
+the live memory database, then copies the snapshot into the existing client
+connection. It does not close or replace that connection because no database
+file exists to stage or atomically replace. On failure or post-start
+cancellation, it restores the rollback candidate before reporting the outcome.
+This preserves the same usable-database guarantee as file-backed restore while
+acknowledging that a process crash still destroys an in-memory database.
 
 ### Stage restore replacement and reconstruct client state
 
 Restore copies the candidate to a same-filesystem staging location, validates
 it, and uses an atomic replacement where the platform supports it.  It retains
 a recoverable original or staged candidate until replacement is known to have
-succeeded.  Afterwards it clears connection and schema-derived state so
-Tortoise reconnects to the restored database rather than cached metadata.
+succeeded. For a memory destination, the operation-local rollback candidate
+replaces file staging and the existing connection remains in use. Afterwards
+the backend clears database-derived state so Tortoise observes the restored
+database rather than cached metadata.
 
 Replacing directly would make interrupted writes destructive.  Running
 migrations would conceal the restored database's actual state and violates the
@@ -67,8 +85,9 @@ feature contract.
 Cancellation before exclusive access or before the candidate is accepted
 causes no live replacement.  During native backup or filesystem replacement,
 the implementation completes cleanup and determines which database is usable
-before re-raising cancellation.  The caller must re-read state before
-proceeding rather than infer whether the request completed.
+before re-raising the original standard `CancelledError` with a non-secret
+note identifying the operation and reconciled outcome. The caller must re-read
+state before proceeding rather than infer whether the request completed.
 
 Returning immediately on cancellation could abandon a partial staged or live
 file transition with no safe recovery path.

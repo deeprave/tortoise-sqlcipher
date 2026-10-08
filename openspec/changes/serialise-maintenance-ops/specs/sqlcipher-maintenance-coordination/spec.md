@@ -65,6 +65,13 @@ able to acquire a usable connection.
 - **THEN** the operation makes no database change and a later client operation
   can complete
 
+#### Scenario: Maintenance operation is cancelled after it changes state
+- **WHEN** a caller cancels a public maintenance operation after its
+  state-changing phase begins
+- **THEN** the operation completes reconciliation where possible, re-raises the
+  original standard cancellation with non-secret operation and outcome detail,
+  and requires the caller to re-read state through the client
+
 ### Requirement: Documented single-client ownership
 The package documentation SHALL warn that public maintenance operations are
 coordinated only within one SQLCipher client and that configuring multiple

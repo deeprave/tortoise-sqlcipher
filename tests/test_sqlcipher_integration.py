@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,7 @@ from tortoise.transactions import in_transaction
 
 from tests.sqlcipher_models import Color, EncryptedRecord, FieldRecord, Rank, RelationRecord, RelationTarget
 from tests.sqlcipher_support import TEST_KEY, database_config, open_sqlcipher_database, sqlcipher
+from tortoise_sqlcipher.sqlite_sqlcipher import SqlCipherClient
 
 DatabaseInitializer = Callable[[str, bytes, bool, bool], Awaitable[Path]]
 
@@ -208,3 +210,49 @@ async def test_rekeyed_database_and_native_backup_require_the_replacement_key(
         old_key_connection.close()
     assert await read_record_through_backend(database_path, replacement_key) == record_value
     assert await read_record_through_backend(backup_path, replacement_key) == record_value
+
+
+@pytest.mark.anyio
+async def test_public_key_rotation_reopens_the_database_with_the_replacement_key(
+    tortoise_database: DatabaseInitializer,
+) -> None:
+    """The client rotates through its public API and retains only the replacement key."""
+    original_key = bytes.fromhex("03" * 32)
+    replacement_key = bytes.fromhex("04" * 32)
+    database_path = await tortoise_database("public-rekey.sqlite", original_key, False, True)
+    record_value = "public-rekey-record"
+    await EncryptedRecord.create(value=record_value)
+
+    client = cast(SqlCipherClient, Tortoise.get_connection("default"))
+    assert await client.rotate_key(replacement_key) is None
+    assert await EncryptedRecord.get().values_list("value", flat=True) == record_value
+
+    await Tortoise.close_connections()
+    old_key_connection = open_sqlcipher_database(database_path, original_key)
+    try:
+        with pytest.raises(sqlcipher.DatabaseError):
+            old_key_connection.execute("SELECT * FROM encryptedrecord").fetchall()
+    finally:
+        old_key_connection.close()
+    assert await read_record_through_backend(database_path, replacement_key) == record_value
+
+
+@pytest.mark.anyio
+async def test_public_snapshot_operations_preserve_tortoise_model_access(
+    tortoise_database: DatabaseInitializer,
+) -> None:
+    """Tortoise reads the restored model state through the refreshed SQLCipher client."""
+    database_path = await tortoise_database("public-snapshot.sqlite", TEST_KEY, False, True)
+    snapshot_path = database_path.with_name("public-snapshot-backup.sqlite")
+    client = cast(SqlCipherClient, Tortoise.get_connection("default"))
+    await EncryptedRecord.create(value="snapshot")
+    assert database_path.with_name(f"{database_path.name}-wal").exists()
+    await client.backup(snapshot_path)
+    await EncryptedRecord.all().delete()
+    await EncryptedRecord.create(value="changed")
+
+    assert await client.restore(snapshot_path) is None
+    assert await EncryptedRecord.get().values_list("value", flat=True) == "snapshot"
+
+    await Tortoise.close_connections()
+    assert await read_record_through_backend(snapshot_path, TEST_KEY) == "snapshot"
