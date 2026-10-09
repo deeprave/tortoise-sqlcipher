@@ -141,6 +141,12 @@ def test_client_rejects_a_non_bytes_key() -> None:
         SqlCipherClient("encrypted.sqlite", cast(bytes, "0" * 32))
 
 
+def test_client_rejects_a_nonlocal_sqlite_uri_for_file_lifecycle_operations() -> None:
+    """Filesystem lifecycle operations require a locally resolvable SQLite URI."""
+    with pytest.raises(ValueError, match="local filesystem path"):
+        sqlite_sqlcipher._database_path("file://remote-host/database.sqlite")
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("replacement_key", [b"too-short", cast(bytes, "not-bytes")])
 async def test_client_rotation_rejects_an_invalid_replacement_key(replacement_key: bytes) -> None:
@@ -213,6 +219,37 @@ async def test_client_backup_creates_an_encrypted_file_snapshot(tmp_path: Path) 
 
 
 @pytest.mark.anyio
+async def test_client_backup_removes_stale_destination_sidecars(tmp_path: Path) -> None:
+    """Replacing a snapshot removes sidecars from its previous database generation."""
+    key = bytes.fromhex("23" * 32)
+    client = SqlCipherClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    stale_wal = Path(f"{snapshot}-wal")
+    stale_shm = Path(f"{snapshot}-shm")
+    try:
+        await client.execute_script("CREATE TABLE records (value TEXT)")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["first"])
+        await client.backup(snapshot)
+        stale_wal.write_bytes(b"stale WAL")
+        stale_shm.write_bytes(b"stale SHM")
+        await client.execute_script("DELETE FROM records")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["second"])
+
+        await client.backup(snapshot)
+
+        assert not stale_wal.exists()
+        assert not stale_shm.exists()
+    finally:
+        await client.close()
+
+    restored = SqlCipherClient(str(snapshot), key, connection_name="snapshot")
+    try:
+        assert await restored.execute_query_dict("SELECT value FROM records") == [{"value": "second"}]
+    finally:
+        await restored.close()
+
+
+@pytest.mark.anyio
 async def test_client_backup_supports_memory_database_sources(tmp_path: Path) -> None:
     """A memory database can create a persistent encrypted snapshot without closing its connection."""
     key = bytes.fromhex("0d" * 32)
@@ -248,6 +285,29 @@ async def test_client_restore_replaces_a_file_backed_database_with_its_snapshot(
         await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["changed"])
 
         assert await client.restore(snapshot) is None
+        assert await client.execute_query_dict("SELECT value FROM records") == [{"value": "snapshot"}]
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_backup_and_restore_support_a_persistent_sqlite_uri(tmp_path: Path) -> None:
+    """Snapshot operations resolve a persistent configured SQLite URI to its database path."""
+    key = bytes.fromhex("24" * 32)
+    database = tmp_path / "source.sqlite"
+    client = SqlCipherClient(f"file:{database}?mode=rwc", key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    try:
+        await client.execute_script("CREATE TABLE records (value TEXT)")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["snapshot"])
+        await client.backup(snapshot)
+        with pytest.raises(ValueError, match="must differ"):
+            await client.backup(database)
+        await client.execute_script("DELETE FROM records")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["changed"])
+
+        await client.restore(snapshot)
+
         assert await client.execute_query_dict("SELECT value FROM records") == [{"value": "snapshot"}]
     finally:
         await client.close()
@@ -338,10 +398,11 @@ async def test_client_memory_restore_recovers_after_a_copy_failure(
 
 @pytest.mark.anyio
 async def test_client_memory_restore_reports_failed_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An unrecoverable memory restore reports the rollback failure as its cause."""
+    """An unrecoverable memory restore retains its rollback and invalidates the client."""
     key = bytes.fromhex("13" * 32)
     client = SqlCipherClient(":memory:", key, connection_name="default")
     snapshot = tmp_path / "snapshot.sqlite"
+    rollback = tmp_path / "retained-rollback.sqlite"
     try:
         await client.execute_script("CREATE TABLE records (value TEXT)")
         await client.backup(snapshot)
@@ -350,10 +411,15 @@ async def test_client_memory_restore_reports_failed_rollback(tmp_path: Path, mon
             raise RuntimeError("copy failed")
 
         monkeypatch.setattr(client, "_copy_path_to_connection", fail_copy)
+        monkeypatch.setattr(sqlite_sqlcipher, "_temporary_database_path", lambda *_args: rollback)
         with pytest.raises(OperationalError, match="could not recover") as error:
             await client.restore(snapshot)
 
         assert isinstance(error.value.__cause__, RuntimeError)
+        assert rollback.is_file()
+        assert client._connection is None
+        with pytest.raises(OperationalError, match="no verified encryption key"):
+            await client.execute_query("SELECT 1")
     finally:
         await client.close()
 
@@ -409,19 +475,150 @@ async def test_client_file_restore_recovers_after_partial_artifact_staging_failu
         original_move = sqlite_sqlcipher._move_database_artifacts
         failed = False
 
-        def move_primary_artifact_then_fail(source: Path, destination: Path) -> None:
+        def move_primary_artifact_then_fail(
+            source: Path, destination: Path, moved_artifacts: list[tuple[Path, Path]]
+        ) -> None:
             nonlocal failed
             if not failed:
                 failed = True
                 sqlite_sqlcipher.os.replace(source, destination)
+                moved_artifacts.append((source, destination))
+                moved_artifacts.append(
+                    (source.with_name("not-moved.sqlite"), destination.with_name("not-moved.sqlite"))
+                )
                 raise OSError("artifact staging failed")
-            original_move(source, destination)
+            original_move(source, destination, moved_artifacts)
 
         monkeypatch.setattr(sqlite_sqlcipher, "_move_database_artifacts", move_primary_artifact_then_fail)
         with pytest.raises(OSError, match="artifact staging failed"):
             await client.restore(snapshot)
 
         assert await client.execute_query_dict("SELECT value FROM records") == [{"value": "original"}]
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_memory_restore_cleans_up_after_initial_rollback_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed initial memory rollback copy removes its partial temporary artifact."""
+    key = bytes.fromhex("20" * 32)
+    client = SqlCipherClient(":memory:", key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    rollback = tmp_path / "rollback.sqlite"
+    snapshot.touch()
+    try:
+
+        async def fail_copy(*_args: object, **_kwargs: object) -> None:
+            rollback.touch()
+            raise RuntimeError("rollback copy failed")
+
+        monkeypatch.setattr(client, "_copy_connection_to_path", fail_copy)
+        monkeypatch.setattr(sqlite_sqlcipher, "_temporary_database_path", lambda *_args: rollback)
+        with pytest.raises(RuntimeError, match="rollback copy failed"):
+            await client.restore(snapshot)
+
+        assert not rollback.exists()
+        assert (await client.execute_query("SELECT 1"))[0] == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_file_restore_cleans_up_after_initial_candidate_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed initial file candidate copy removes its partial temporary artifact."""
+    key = bytes.fromhex("21" * 32)
+    database = tmp_path / "source.sqlite"
+    client = SqlCipherClient(str(database), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    candidate = tmp_path / "candidate.sqlite"
+    rollback = tmp_path / "rollback.sqlite"
+    snapshot.touch()
+    paths = iter((candidate, rollback))
+    try:
+
+        async def fail_copy(*_args: object, **_kwargs: object) -> None:
+            candidate.touch()
+            raise RuntimeError("candidate copy failed")
+
+        monkeypatch.setattr(client, "_copy_path_to_path", fail_copy)
+        monkeypatch.setattr(sqlite_sqlcipher, "_temporary_database_path", lambda *_args: next(paths))
+        with pytest.raises(RuntimeError, match="candidate copy failed"):
+            await client.restore(snapshot)
+
+        assert not candidate.exists()
+        assert (await client.execute_query("SELECT 1"))[0] == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_file_restore_preserves_live_database_after_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure before rollback staging does not replace or delete the live database."""
+    key = bytes.fromhex("1e" * 32)
+    client = SqlCipherClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    try:
+        await client.execute_script("CREATE TABLE records (value TEXT)")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["snapshot"])
+        await client.backup(snapshot)
+        await client.execute_script("DELETE FROM records")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["original"])
+        original_close = client._close_connection
+        failed = False
+
+        async def fail_once() -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("close failed")
+            await original_close()
+
+        monkeypatch.setattr(client, "_close_connection", fail_once)
+        with pytest.raises(RuntimeError, match="close failed"):
+            await client.restore(snapshot)
+
+        assert await client.execute_query_dict("SELECT value FROM records") == [{"value": "original"}]
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_backup_preserves_existing_snapshot_after_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed backup does not replace an existing encrypted snapshot."""
+    key = bytes.fromhex("1f" * 32)
+    client = SqlCipherClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    try:
+        await client.execute_script("CREATE TABLE records (value TEXT)")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["original"])
+        await client.backup(snapshot)
+        await client.execute_script("DELETE FROM records")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["new"])
+        original_copy = client._copy_connection_to_path
+
+        async def copy_then_fail(
+            connection: sqlite_sqlcipher.aiosqlite.Connection, destination: Path, encryption_key: bytes
+        ) -> None:
+            await original_copy(connection, destination, encryption_key)
+            raise RuntimeError("backup copy failed")
+
+        monkeypatch.setattr(client, "_copy_connection_to_path", copy_then_fail)
+        with pytest.raises(RuntimeError, match="backup copy failed"):
+            await client.backup(snapshot)
+
+        restored = SqlCipherClient(str(snapshot), key, connection_name="snapshot")
+        try:
+            assert await restored.execute_query_dict("SELECT value FROM records") == [{"value": "original"}]
+        finally:
+            await restored.close()
     finally:
         await client.close()
 
@@ -444,6 +641,51 @@ async def test_client_file_restore_reports_failed_recovery(tmp_path: Path, monke
             await client.restore(snapshot)
 
         assert isinstance(error.value.__cause__, RuntimeError)
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_file_restore_reports_rollback_path_when_recovery_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed rollback replacement leaves a database at the live path and reports its rollback path."""
+    key = bytes.fromhex("25" * 32)
+    database = tmp_path / "source.sqlite"
+    client = SqlCipherClient(str(database), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    try:
+        await client.execute_script("CREATE TABLE records (value TEXT)")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["snapshot"])
+        await client.backup(snapshot)
+        await client.execute_script("DELETE FROM records")
+        await client.execute_insert("INSERT INTO records(value) VALUES (?)", ["changed"])
+        original_create = client.create_connection
+        original_move = sqlite_sqlcipher._move_database_artifacts
+        create_calls = 0
+        move_calls = 0
+
+        async def fail_first_reconnect(with_db: bool) -> None:
+            nonlocal create_calls
+            create_calls += 1
+            if create_calls == 1:
+                raise RuntimeError("reconnect failed")
+            await original_create(with_db)
+
+        def fail_rollback_move(source: Path, destination: Path, moved_artifacts: list[tuple[Path, Path]]) -> None:
+            nonlocal move_calls
+            move_calls += 1
+            if move_calls == 2:
+                raise OSError("rollback move failed")
+            original_move(source, destination, moved_artifacts)
+
+        monkeypatch.setattr(client, "create_connection", fail_first_reconnect)
+        monkeypatch.setattr(sqlite_sqlcipher, "_move_database_artifacts", fail_rollback_move)
+        with pytest.raises(OperationalError, match="rollback remains at") as error:
+            await client.restore(snapshot)
+
+        assert str(database.parent) in str(error.value)
+        assert database.is_file()
     finally:
         await client.close()
 
@@ -532,7 +774,7 @@ async def test_client_snapshot_cancellation_is_reported_after_completion(
 ) -> None:
     """Cancellation waits for a dispatched backup to produce its encrypted snapshot."""
     key = bytes.fromhex("18" * 32)
-    client = SqlCipherClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
+    client = MaintenanceTestClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
     snapshot = tmp_path / "snapshot.sqlite"
     started = asyncio.Event()
     release = asyncio.Event()
@@ -550,9 +792,10 @@ async def test_client_snapshot_cancellation_is_reported_after_completion(
     query: asyncio.Task[tuple[int, Sequence[dict[str, Any]]]] | None = None
     try:
         await asyncio.wait_for(started.wait(), timeout=1)
+        client.connection_acquired.clear()
         query = asyncio.create_task(client.execute_query("SELECT 1"))
         await asyncio.sleep(0)
-        assert not query.done()
+        assert not client.connection_acquired.is_set()
         operation.cancel()
         await asyncio.sleep(0)
         operation.cancel()
@@ -577,6 +820,36 @@ async def test_client_snapshot_cancellation_is_reported_after_completion(
             query.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await query
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_client_snapshot_cancellation_reports_after_operation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-start cancellation remains visible when backup later fails."""
+    key = bytes.fromhex("22" * 32)
+    client = SqlCipherClient(str(tmp_path / "source.sqlite"), key, connection_name="default")
+    snapshot = tmp_path / "snapshot.sqlite"
+    started = asyncio.Event()
+    operation: asyncio.Task[None] | None = None
+    try:
+
+        async def delayed_failure(*_args: object, **_kwargs: object) -> None:
+            started.set()
+            assert operation is not None
+            operation.cancel()
+            await asyncio.sleep(0)
+            raise RuntimeError("backup failed")
+
+        monkeypatch.setattr(client, "_copy_connection_to_path", delayed_failure)
+        operation = asyncio.create_task(client.backup(snapshot))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        with pytest.raises(asyncio.CancelledError) as cancellation:
+            await operation
+
+        assert getattr(cancellation.value, "__notes__", ()) == ["SQLCipher backup failed; re-read database state"]
+    finally:
         await client.close()
 
 

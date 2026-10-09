@@ -12,6 +12,7 @@ from functools import wraps
 from importlib import import_module
 from pathlib import Path
 from typing import Any, ParamSpec, Protocol, TypeVar, cast
+from urllib.parse import unquote, urlsplit
 
 import aiosqlite
 from tortoise.backends.base.client import ConnectionWrapper, NestedTransactionContext, TransactionContext
@@ -83,6 +84,17 @@ def _snapshot_path(path: str | os.PathLike[str], operation: str) -> Path:
     return Path(raw_path)
 
 
+def _database_path(filename: str) -> Path:
+    """Resolve a configured local SQLite URI or filesystem path to its file path."""
+    if not filename.startswith("file:"):
+        return Path(filename)
+    parsed = urlsplit(filename)
+    if parsed.netloc not in ("", "localhost"):
+        msg = "SQLCipher database URI must name a local filesystem path"
+        raise ValueError(msg)
+    return Path(unquote(parsed.path))
+
+
 def _temporary_database_path(directory: Path, operation: str) -> Path:
     """Reserve a same-filesystem path for an encrypted temporary database."""
     descriptor, raw_path = tempfile.mkstemp(prefix=f".{operation}-", suffix=".sqlite", dir=directory)
@@ -97,18 +109,25 @@ def _database_artifacts(path: Path) -> tuple[Path, Path, Path]:
     return path, Path(f"{path}-wal"), Path(f"{path}-shm")
 
 
-def _move_database_artifacts(source: Path, destination: Path) -> None:
+def _move_database_artifacts(source: Path, destination: Path, moved_artifacts: list[tuple[Path, Path]]) -> None:
     """Move a database and any sidecars to a matching rollback location."""
     for source_artifact, destination_artifact in zip(
         _database_artifacts(source), _database_artifacts(destination), strict=True
     ):
         if source_artifact.exists():
             os.replace(source_artifact, destination_artifact)
+            moved_artifacts.append((source_artifact, destination_artifact))
 
 
 def _remove_database_artifacts(path: Path) -> None:
     """Remove a database and its sidecars after their replacement is verified."""
     for artifact in _database_artifacts(path):
+        artifact.unlink(missing_ok=True)
+
+
+def _remove_database_sidecars(path: Path) -> None:
+    """Remove SQLite sidecars which cannot accompany a replaced snapshot."""
+    for artifact in _database_artifacts(path)[1:]:
         artifact.unlink(missing_ok=True)
 
 
@@ -392,40 +411,65 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
     ) -> None:
         """Restore a snapshot into memory while retaining an encrypted rollback copy."""
         rollback = _temporary_database_path(Path(tempfile.gettempdir()), "tortoise-sqlcipher-rollback")
-        await self._copy_connection_to_path(connection, rollback, encryption_key)
+        rollback_ready = False
+        recovery_failed = False
         try:
+            await self._copy_connection_to_path(connection, rollback, encryption_key)
+            rollback_ready = True
             await self._copy_path_to_connection(snapshot, connection, encryption_key)
         except BaseException:
+            if not rollback_ready:
+                raise
             try:
                 await self._copy_path_to_connection(rollback, connection, encryption_key)
             except BaseException as recovery_error:
+                recovery_failed = True
+                await self._close_connection()
+                self._encryption_key = None
+                self.log.warning("SQLCipher memory restore retained rollback snapshot at %s", rollback)
                 msg = "SQLCipher memory restore could not recover the original database"
                 raise OperationalError(msg) from recovery_error
             raise
         finally:
-            _remove_database_artifacts(rollback)
+            if not recovery_failed:
+                _remove_database_artifacts(rollback)
 
     async def _restore_file_database(
         self, connection: aiosqlite.Connection, snapshot: Path, encryption_key: bytes
     ) -> None:
         """Restore a snapshot through a staged candidate and recoverable file replacement."""
-        database = Path(self.filename)
+        database = _database_path(self.filename)
         candidate = _temporary_database_path(database.parent, "tortoise-sqlcipher-restore")
         rollback = _temporary_database_path(database.parent, "tortoise-sqlcipher-rollback")
-        await self._copy_path_to_path(snapshot, candidate, encryption_key)
+        candidate_ready = False
+        rollback_staged = False
+        moved_artifacts: list[tuple[Path, Path]] = []
         try:
+            await self._copy_path_to_path(snapshot, candidate, encryption_key)
+            candidate_ready = True
             await self._close_connection()
-            _move_database_artifacts(database, rollback)
+            _move_database_artifacts(database, rollback, moved_artifacts)
+            rollback_staged = True
             os.replace(candidate, database)
             await self.create_connection(with_db=True)
         except BaseException:
+            if not candidate_ready:
+                raise
             try:
                 await self._close_connection()
-                _remove_database_artifacts(database)
-                _move_database_artifacts(rollback, database)
+                if rollback_staged:
+                    restored_artifacts: list[tuple[Path, Path]] = []
+                    _move_database_artifacts(rollback, database, restored_artifacts)
+                    restored_sidecars = {destination for _, destination in restored_artifacts}
+                    for sidecar in set(_database_artifacts(database)[1:]) - restored_sidecars:
+                        sidecar.unlink(missing_ok=True)
+                else:
+                    for source_artifact, destination_artifact in reversed(moved_artifacts):
+                        if destination_artifact.exists():
+                            os.replace(destination_artifact, source_artifact)
                 await self.create_connection(with_db=True)
             except BaseException as recovery_error:
-                msg = "SQLCipher restore could not recover the original database"
+                msg = f"SQLCipher restore could not recover the original database; rollback remains at {rollback}"
                 raise OperationalError(msg) from recovery_error
             raise
         else:
@@ -433,17 +477,35 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
         finally:
             _remove_database_artifacts(candidate)
 
+    async def _backup_database(
+        self, connection: aiosqlite.Connection, destination: Path, encryption_key: bytes
+    ) -> None:
+        """Create a staged encrypted backup without replacing an existing snapshot on failure."""
+        candidate = _temporary_database_path(destination.parent, "tortoise-sqlcipher-backup")
+        try:
+            await self._copy_connection_to_path(connection, candidate, encryption_key)
+            os.replace(candidate, destination)
+            _remove_database_sidecars(destination)
+        finally:
+            _remove_database_artifacts(candidate)
+
     async def _complete_snapshot_operation(self, operation: Awaitable[None], name: str) -> None:
         """Finish a dispatched snapshot operation before reporting caller cancellation."""
         completion = asyncio.ensure_future(operation)
         cancellation: asyncio.CancelledError | None = None
-        while not completion.done():
+
+        while True:
             try:
                 await asyncio.shield(completion)
+                break
             except asyncio.CancelledError as error:
                 if cancellation is None:
                     cancellation = error
-        completion.result()
+            except Exception as error:
+                if cancellation is not None:
+                    cancellation.add_note(f"SQLCipher {name} failed; re-read database state")
+                    raise cancellation from error
+                raise
         if cancellation is not None:
             cancellation.add_note(f"SQLCipher {name} completed; re-read database state")
             raise cancellation
@@ -459,12 +521,15 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
         """Create an encrypted snapshot at a persistent filesystem destination."""
         destination_path = _snapshot_path(destination, "backup")
         async with self._maintenance_connection() as connection:
-            if not await is_mem_db(connection) and destination_path.resolve() == Path(self.filename).resolve():
+            if (
+                not await is_mem_db(connection)
+                and destination_path.resolve() == _database_path(self.filename).resolve()
+            ):
                 msg = "SQLCipher backup destination must differ from the active database"
                 raise ValueError(msg)
             encryption_key = cast(bytes, self._encryption_key)
             await self._complete_snapshot_operation(
-                self._copy_connection_to_path(connection, destination_path, encryption_key), "backup"
+                self._backup_database(connection, destination_path, encryption_key), "backup"
             )
 
     @translate_sqlcipher_exceptions
