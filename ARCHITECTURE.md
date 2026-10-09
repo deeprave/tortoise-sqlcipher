@@ -42,6 +42,19 @@ claim that an application has solved all secret-management or recovery risks.
 Windows support is not yet fully validated; the package does not make a Windows
 compatibility claim until the SQLCipher/WAL behaviour has been investigated.
 
+## Maintenance operations
+
+Key rotation is available only for databases with a backing file because it
+must close and reopen the client connection to verify the replacement key.
+`is_mem_db()` exposes SQLite's runtime determination for applications that
+need that distinction.
+
+Snapshots use SQLCipher's native copy operation. Backup can copy either a
+file-backed or memory database into a persistent encrypted snapshot. Restore
+uses an atomic file replacement with a rollback copy for file-backed databases;
+for memory databases it copies into the existing live connection and keeps an
+encrypted operation-local rollback snapshot.
+
 ## Evidence and support status
 
 Package regression coverage exercises Tortoise models, native migrations,

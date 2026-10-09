@@ -95,8 +95,9 @@ cancellation is surfaced.  Feature-specific designs define the exact outcome
 that is reported.
 
 For key rotation and restore, cancellation after the state-changing phase
-begins is cleaned up and then re-raised.  Callers must treat that signal as an
-unknown final database state and re-read through the client before proceeding.
+begins is cleaned up and then the original standard `CancelledError` is
+re-raised with a non-secret note identifying the operation and reconciled
+outcome. Callers must re-read through the client before proceeding.
 
 Allowing a task to abandon the operation at that point could release access
 while an executor thread or filesystem operation still changes the database.

@@ -14,7 +14,3 @@
 - [x] 2.2 Add coverage that overlapping maintenance operations do not interleave, and verify their observable ordering is deterministic.
 - [x] 2.3 Add cancellation and failure coverage that proves a later query and maintenance operation can acquire a usable client state.
 - [x] 2.4 Add regression coverage that Tortoise connection closure waits for active maintenance, and verify no operation uses a closed connection.
-
-## 3. Verification
-
-- [ ] 3.1 Run `uv run ruff check .`, `uv run ty check`, and `uv run pytest` and verify all checks pass.

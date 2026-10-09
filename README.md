@@ -29,8 +29,55 @@ Configure Tortoise with the `tortoise_sqlcipher.sqlite_sqlcipher` engine and a
 ```
 
 The engine validates that the supplied key is exactly 32 bytes and never falls
-back to plaintext SQLite. Applications remain responsible for obtaining,
-storing, and rotating their encryption keys.
+back to plaintext SQLite. Applications remain responsible for generating and
+storing their encryption keys.
+
+### Key rotation
+
+Rotate an existing database through the configured client with a replacement
+32-byte `bytes` key:
+
+```python
+client = Tortoise.get_connection("default")
+await client.rotate_key(replacement_key)
+```
+
+`rotate_key` returns only after it has reopened the database with the
+replacement key. Persist the replacement in external key storage only after
+that normal return.
+
+If a caller cancels rotation after the native operation has begun,
+`asyncio.CancelledError` is re-raised only after the client has reconciled its
+connection. Its non-secret note says whether the replacement or former key was
+retained. In that case, re-read database state before changing external key
+storage or issuing further application work.
+
+Key rotation requires a persistent file-backed database; in-memory databases,
+including SQLite memory URIs, and temporary databases are unsupported. If it
+raises `OperationalError`, do not discard either key until a fresh client
+verifies database access.
+
+Applications can check the current database before scheduling maintenance:
+
+```python
+if await client.is_mem_db():
+    # Key rotation requires a persistent database.
+    ...
+```
+
+### Snapshots
+
+Create an encrypted, self-contained snapshot at a persistent filesystem path,
+then restore it through the configured client:
+
+```python
+await client.backup("encrypted.snapshot.sqlite")
+await client.restore("encrypted.snapshot.sqlite")
+```
+
+Snapshots use SQLCipher's native copy operation. Backing up an in-memory
+database is supported; restoring into one replaces its live contents without
+closing the client connection.
 
 ### SQLCipher pragmas
 
