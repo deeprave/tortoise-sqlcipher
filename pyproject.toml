@@ -1,6 +1,6 @@
 [project]
 name = "tortoise-sqlcipher"
-version = "0.1.0"
+version = "0.5.0"
 description = "Tortoise ORM backend support for SQLCipher-encrypted SQLite databases"
 readme = "README.md"
 license = "MIT"
