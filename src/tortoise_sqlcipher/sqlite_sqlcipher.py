@@ -4,7 +4,7 @@ import asyncio
 import os
 import sqlite3
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -283,7 +283,7 @@ class SqlCipherClient(SqlCipherQueryMixin, SqliteClient):
         return isinstance(current_connection, SqlCipherTransactionWrapper) and current_connection._parent is self
 
     @asynccontextmanager
-    async def _maintenance_connection(self) -> AsyncIterator[aiosqlite.Connection]:
+    async def _maintenance_connection(self) -> AsyncGenerator[aiosqlite.Connection]:
         """Acquire exclusive client access for a database maintenance operation."""
         if self._has_active_transaction():
             msg = "Database maintenance cannot run inside an active transaction"

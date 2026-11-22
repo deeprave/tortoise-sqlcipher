@@ -6,10 +6,17 @@
 [![PyPI downloads](https://img.shields.io/pypi/dm/tortoise-sqlcipher.svg?logo=pypi&logoColor=white)](https://pypi.org/project/tortoise-sqlcipher/)
 [![Python versions](https://img.shields.io/pypi/pyversions/tortoise-sqlcipher.svg?logo=python&logoColor=white)](https://pypi.org/project/tortoise-sqlcipher/)
 
-`tortoise-sqlcipher` provides a Tortoise ORM-specific SQLite backend using
-SQLCipher and `aiosqlite` for encrypted local databases.
+`tortoise-sqlcipher` is a drop-in encrypted SQLite backend for Tortoise ORM.
+It replaces Tortoise's standard SQLite connector with SQLCipher while retaining
+the Tortoise SQLite experience: models, queries, relations, transactions, and
+native migrations continue to work through the normal Tortoise APIs.
 
-## Configuration
+Use it when an application needs a local encrypted database without giving up
+the functionality Tortoise provides with SQLite. SQLCipher-specific operations
+for backup, restore, and key rotation are available in addition to that
+baseline.
+
+## Use with Tortoise
 
 Configure Tortoise with the `tortoise_sqlcipher.sqlite_sqlcipher` engine and a
 32-byte encryption key:
@@ -32,6 +39,46 @@ The engine validates that the supplied key is exactly 32 bytes and never falls
 back to plaintext SQLite. Applications remain responsible for generating and
 storing their encryption keys.
 
+## Tortoise compatibility
+
+The backend follows Tortoise's SQLite behaviour, so application code uses the
+same Tortoise models and APIs it would use with an unencrypted SQLite database.
+This includes normal query and relation handling, transactions, and Tortoise's
+native SQLite migration workflow. The difference is that the database files
+and their SQLite sidecars are opened through SQLCipher.
+
+## SQLCipher additions
+
+### Encrypted backup and restore
+
+Create a complete encrypted snapshot at a persistent filesystem path, then
+restore it through the configured Tortoise client:
+
+```python
+client = Tortoise.get_connection("default")
+await client.backup("encrypted.snapshot.sqlite")
+await client.restore("encrypted.snapshot.sqlite")
+```
+
+`backup` uses SQLCipher's native copy operation to produce a self-contained,
+encrypted snapshot without the application having to manage SQLite WAL or
+shared-memory sidecars. It supports file-backed, temporary, and in-memory
+source databases.
+
+`restore` validates the snapshot before replacing a file-backed database and
+keeps recovery material if replacement fails. Restoring into a temporary or
+in-memory database is also supported: it replaces the contents of the existing
+live connection without replacing a database file or closing the client.
+
+Applications can determine whether the current database is in memory when
+their own maintenance policy needs that distinction:
+
+```python
+if await client.is_mem_db():
+    # For example, choose a file-backed destination for a durable backup.
+    ...
+```
+
 ### Key rotation
 
 Rotate an existing database through the configured client with a replacement
@@ -46,38 +93,12 @@ await client.rotate_key(replacement_key)
 replacement key. Persist the replacement in external key storage only after
 that normal return.
 
-If a caller cancels rotation after the native operation has begun,
-`asyncio.CancelledError` is re-raised only after the client has reconciled its
-connection. Its non-secret note says whether the replacement or former key was
-retained. In that case, re-read database state before changing external key
-storage or issuing further application work.
-
 Key rotation requires a persistent file-backed database; in-memory databases,
 including SQLite memory URIs, and temporary databases are unsupported. If it
 raises `OperationalError`, do not discard either key until a fresh client
-verifies database access.
-
-Applications can check the current database before scheduling maintenance:
-
-```python
-if await client.is_mem_db():
-    # Key rotation requires a persistent database.
-    ...
-```
-
-### Snapshots
-
-Create an encrypted, self-contained snapshot at a persistent filesystem path,
-then restore it through the configured client:
-
-```python
-await client.backup("encrypted.snapshot.sqlite")
-await client.restore("encrypted.snapshot.sqlite")
-```
-
-Snapshots use SQLCipher's native copy operation. Backing up an in-memory
-database is supported; restoring into one replaces its live contents without
-closing the client connection.
+verifies database access. If cancellation occurs after rotation begins, the
+client first reconciles its connection and then re-raises `asyncio.CancelledError`
+with non-secret outcome detail; re-read database state before further work.
 
 ### SQLCipher pragmas
 
